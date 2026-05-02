@@ -1,11 +1,15 @@
 import google.generativeai as genai
 from typing import Generator, Optional, Callable
-from config import GEMINI_API_KEY, GEMINI_MODEL
+from config import GEMINI_API_KEY, GEMINI_MODEL_EXTRACT, GEMINI_MODEL_ANALYSIS
 
 class GeminiClient:
-    def __init__(self):
+    def __init__(self, model_name: str = GEMINI_MODEL_ANALYSIS):
         genai.configure(api_key=GEMINI_API_KEY)
-        self.model = genai.GenerativeModel(GEMINI_MODEL)
+        self.model_name = model_name
+        self.model = genai.GenerativeModel(model_name)
+    
+    def get_model_name(self) -> str:
+        return self.model_name
     
     def generate_text(self, prompt: str) -> str:
         response = self.model.generate_content(prompt)
@@ -33,7 +37,7 @@ class GeminiClient:
         stream: bool = True
     ) -> tuple[str, dict]:
         full_text = ""
-        metadata = {}
+        metadata = {'model': self.model_name}
         
         if stream:
             for chunk in self.generate_text_stream(prompt, on_chunk=on_chunk):

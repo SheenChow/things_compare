@@ -9,16 +9,18 @@ from agents.agent_compare_ab import COMPARE_AB_PROMPT
 from agents.agent_a_view_b import A_VIEW_B_PROMPT
 from agents.agent_b_view_a import B_VIEW_A_PROMPT
 from agents.agent_summarizer import SUMMARIZER_PROMPT
+from config import GEMINI_MODEL_EXTRACT
 
 @dataclass
 class StepEvent:
     step: str
     step_name: str
-    status: str  # "start", "streaming", "complete", "error"
+    status: str
     content: Optional[str] = None
     prompt: Optional[str] = None
     full_result: Optional[str] = None
     error: Optional[str] = None
+    model_name: Optional[str] = None
     timestamp: str = ""
 
     def __post_init__(self):
@@ -61,6 +63,7 @@ class StreamingCompareWorkflow:
         prompt: Optional[str] = None,
         full_result: Optional[str] = None,
         error: Optional[str] = None,
+        model_name: Optional[str] = None,
         on_event: Optional[Callable[[StepEvent], None]] = None
     ):
         event = StepEvent(
@@ -70,7 +73,8 @@ class StreamingCompareWorkflow:
             content=content,
             prompt=prompt,
             full_result=full_result,
-            error=error
+            error=error,
+            model_name=model_name
         )
         if on_event:
             on_event(event)
@@ -93,9 +97,12 @@ class StreamingCompareWorkflow:
         }
         self.debug_info = {}
         
+        extract_model_name = self.object_extractor.get_model_name()
+        
         self._send_event(
             self.STEP_EXTRACT, "start", 
             content=f"正在解析输入: \"{user_input}\"",
+            model_name=extract_model_name,
             on_event=on_event
         )
         
@@ -113,18 +120,21 @@ class StreamingCompareWorkflow:
                 content=extract_content,
                 full_result=f"{thing_a},{thing_b}",
                 prompt=extract_prompt if include_debug else None,
+                model_name=extract_model_name,
                 on_event=on_event
             )
             
             self.debug_info[self.STEP_EXTRACT] = {
                 "prompt": extract_prompt,
-                "result": f"{thing_a},{thing_b}"
+                "result": f"{thing_a},{thing_b}",
+                "model": extract_model_name
             }
             
         except Exception as e:
             self._send_event(
                 self.STEP_EXTRACT, "error",
                 error=str(e),
+                model_name=extract_model_name,
                 on_event=on_event
             )
             raise
@@ -137,6 +147,7 @@ class StreamingCompareWorkflow:
             agent_fn=lambda on_chunk: self.agent_compare_ab.gemini.generate_text_with_full_result(
                 compare_prompt, on_chunk=on_chunk, stream=True
             ),
+            model_name=self.agent_compare_ab.gemini.get_model_name(),
             on_event=on_event,
             include_debug=include_debug
         )
@@ -149,6 +160,7 @@ class StreamingCompareWorkflow:
             agent_fn=lambda on_chunk: self.agent_a_view_b.gemini.generate_text_with_full_result(
                 a_view_b_prompt, on_chunk=on_chunk, stream=True
             ),
+            model_name=self.agent_a_view_b.gemini.get_model_name(),
             on_event=on_event,
             include_debug=include_debug
         )
@@ -161,6 +173,7 @@ class StreamingCompareWorkflow:
             agent_fn=lambda on_chunk: self.agent_b_view_a.gemini.generate_text_with_full_result(
                 b_view_a_prompt, on_chunk=on_chunk, stream=True
             ),
+            model_name=self.agent_b_view_a.gemini.get_model_name(),
             on_event=on_event,
             include_debug=include_debug
         )
@@ -179,6 +192,7 @@ class StreamingCompareWorkflow:
             agent_fn=lambda on_chunk: self.agent_summarizer.gemini.generate_text_with_full_result(
                 summarize_prompt, on_chunk=on_chunk, stream=True
             ),
+            model_name=self.agent_summarizer.gemini.get_model_name(),
             on_event=on_event,
             include_debug=include_debug
         )
@@ -194,6 +208,7 @@ class StreamingCompareWorkflow:
         prompt: str,
         result_key: str,
         agent_fn,
+        model_name: str,
         on_event: Optional[Callable[[StepEvent], None]] = None,
         include_debug: bool = True
     ):
@@ -205,6 +220,7 @@ class StreamingCompareWorkflow:
             self._send_event(
                 step, "streaming",
                 content=chunk,
+                model_name=model_name,
                 on_event=on_event
             )
         
@@ -212,6 +228,7 @@ class StreamingCompareWorkflow:
             step, "start",
             content=f"正在执行 {self.STEP_NAMES[step]}...",
             prompt=prompt if include_debug else None,
+            model_name=model_name,
             on_event=on_event
         )
         
@@ -222,18 +239,21 @@ class StreamingCompareWorkflow:
             self._send_event(
                 step, "complete",
                 full_result=result,
+                model_name=model_name,
                 on_event=on_event
             )
             
             self.debug_info[step] = {
                 "prompt": prompt,
-                "result": result
+                "result": result,
+                "model": model_name
             }
             
         except Exception as e:
             self._send_event(
                 step, "error",
                 error=str(e),
+                model_name=model_name,
                 on_event=on_event
             )
             raise
@@ -283,8 +303,11 @@ class StreamingCompareWorkflow:
             
             for step, info in self.debug_info.items():
                 step_name = self.STEP_NAMES.get(step, step)
+                model = info.get('model', '未知')
                 md_lines.extend([
                     f"### {step_name}",
+                    f"",
+                    f"**使用模型:** {model}",
                     f"",
                     f"**Prompt:**",
                     f"```",

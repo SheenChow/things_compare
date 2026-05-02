@@ -234,7 +234,22 @@
         .step-title {
             font-weight: 600;
             color: #374151;
-            flex: 1;
+        }
+        
+        .model-name {
+            font-size: 12px;
+            color: #8b5cf6;
+            background: #f3e8ff;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            border: 1px solid #ddd6fe;
+        }
+        
+        .model-name.lite {
+            color: #059669;
+            background: #d1fae5;
+            border-color: #a7f3d0;
         }
         
         .step-status {
@@ -243,6 +258,7 @@
             display: flex;
             align-items: center;
             gap: 6px;
+            margin-left: auto;
         }
         
         .status-dot {
@@ -663,6 +679,7 @@
                 stepStates[stepId] = {
                     element: document.getElementById(`step-${stepId}`),
                     content: '',
+                    modelName: '',
                     debugInfo: { prompt: '', result: '' }
                 };
             }
@@ -674,6 +691,18 @@
             const stepNumber = stepEl.querySelector('.step-number');
             const stepStatus = stepEl.querySelector('.step-status');
             const statusDot = stepEl.querySelector('.status-dot');
+            const stepModelName = stepEl.querySelector('.model-name');
+            
+            if (data.model_name && !state.modelName) {
+                state.modelName = data.model_name;
+                if (stepModelName) {
+                    stepModelName.textContent = data.model_name;
+                    stepModelName.style.display = 'inline-block';
+                    if (data.model_name.includes('lite') || data.model_name.includes('Lite')) {
+                        stepModelName.classList.add('lite');
+                    }
+                }
+            }
             
             if (data.prompt) {
                 state.debugInfo.prompt = data.prompt;
@@ -754,6 +783,7 @@
                     <div class="step-header">
                         <div class="step-number">${config.number}</div>
                         <div class="step-title">${config.name}</div>
+                        <div class="model-name" style="display: none;">加载中...</div>
                         <div class="step-status">
                             <span class="status-dot"></span> 等待中
                         </div>
