@@ -584,7 +584,9 @@
             
             const showDebug = document.getElementById('showDebug').checked;
             
-            fetch('/api/compare', {
+            console.log('开始请求 /api/start...');
+            
+            fetch('/api/start', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -594,23 +596,49 @@
                     include_debug: showDebug
                 })
             }).then(response => {
-                currentSessionId = response.headers.get('X-Session-Id');
+                console.log('收到 /api/start 响应:', response.status);
+                return response.json();
+            }).then(data => {
+                console.log('响应数据:', data);
                 
-                if (!response.ok) {
-                    throw new Error('请求失败');
+                if (data.error) {
+                    throw new Error(data.error);
                 }
                 
-                eventSource = new EventSource(response.url);
+                if (!data.success) {
+                    throw new Error('启动分析失败');
+                }
+                
+                currentSessionId = data.session_id;
+                console.log('Session ID:', currentSessionId);
+                
+                const streamUrl = `/api/stream/${currentSessionId}`;
+                console.log('连接到 SSE:', streamUrl);
+                
+                eventSource = new EventSource(streamUrl);
                 
                 eventSource.onmessage = function(event) {
-                    const data = JSON.parse(event.data);
-                    handleEvent(data);
+                    console.log('收到 SSE 消息:', event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleEvent(data);
+                    } catch (e) {
+                        console.error('解析 SSE 消息失败:', e);
+                    }
                 };
                 
                 eventSource.onerror = function(error) {
-                    console.error('EventSource error:', error);
+                    console.error('EventSource 错误:', error);
+                    console.log('EventSource readyState:', eventSource.readyState);
+                    if (eventSource.readyState === EventSource.CLOSED) {
+                        console.log('EventSource 已关闭');
+                    }
                     eventSource.close();
                     finishAnalyze();
+                };
+                
+                eventSource.onopen = function() {
+                    console.log('EventSource 连接已建立');
                 };
                 
             }).catch(error => {
