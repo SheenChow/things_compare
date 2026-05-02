@@ -205,13 +205,30 @@ class StreamingCompareWorkflow:
             include_debug=include_debug
         )
         
+        compare_ab_result = self.results.get("compare_ab_result") or ""
+        a_view_b_result = self.results.get("a_view_b_result") or ""
+        b_view_a_result = self.results.get("b_view_b_result") or ""
+        
+        logger.info(f"[run_streaming] 准备调用 Summarizer")
+        logger.info(f"  compare_ab_result 长度: {len(compare_ab_result)}")
+        logger.info(f"  a_view_b_result 长度: {len(a_view_b_result)}")
+        logger.info(f"  b_view_a_result 长度: {len(b_view_a_result)}")
+        
+        MAX_TRUNCATE = 1200
+        compare_ab_truncated = compare_ab_result[:MAX_TRUNCATE] if len(compare_ab_result) > MAX_TRUNCATE else compare_ab_result
+        a_view_b_truncated = a_view_b_result[:MAX_TRUNCATE] if len(a_view_b_result) > MAX_TRUNCATE else a_view_b_result
+        b_view_a_truncated = b_view_a_result[:MAX_TRUNCATE] if len(b_view_a_result) > MAX_TRUNCATE else b_view_a_result
+        
         summarize_prompt = SUMMARIZER_PROMPT.format(
             thing_a=thing_a,
             thing_b=thing_b,
-            compare_ab_result=self.results["compare_ab_result"],
-            a_view_b_result=self.results["a_view_b_result"],
-            b_view_a_result=self.results["b_view_a_result"]
+            compare_ab_result=compare_ab_truncated,
+            a_view_b_result=a_view_b_truncated,
+            b_view_a_result=b_view_a_truncated
         )
+        
+        logger.info(f"[run_streaming] Summarizer Prompt 总长度: {len(summarize_prompt)} 字符")
+        
         self._run_agent_streaming(
             step=self.STEP_SUMMARIZE,
             prompt=summarize_prompt,
@@ -224,13 +241,25 @@ class StreamingCompareWorkflow:
             include_debug=include_debug
         )
         
+        logger.info(f"[run_streaming] 准备调用图像生成")
+        logger.info(f"  thing_a: {thing_a}")
+        logger.info(f"  thing_b: {thing_b}")
+        
+        summary_text = self.results.get("summary_result") or ""
+        if not summary_text or "步骤执行失败" in summary_text:
+            logger.warning("[run_streaming] Summarizer 失败，使用截断的结果")
+            summary_text = f"{compare_ab_truncated[:500]}\n{a_view_b_truncated[:300]}"
+        
+        logger.info(f"[run_streaming] 开始执行图像生成步骤...")
         self._run_image_generation(
             thing_a=thing_a,
             thing_b=thing_b,
-            summary_text=self.results["summary_result"],
+            summary_text=summary_text,
             on_event=on_event,
             include_debug=include_debug
         )
+        
+        logger.info(f"[run_streaming] 所有步骤完成")
         
         return {
             "results": self.results,
@@ -250,6 +279,10 @@ class StreamingCompareWorkflow:
         include_debug: bool = True
     ):
         full_content = ""
+        prompt_length = len(prompt)
+        logger.info(f"[_run_agent_streaming] 开始执行步骤: {step}")
+        logger.info(f"[_run_agent_streaming] Prompt 长度: {prompt_length} 字符")
+        logger.info(f"[_run_agent_streaming] 模型: {model_name}")
         
         def on_chunk(chunk: str):
             nonlocal full_content
@@ -264,13 +297,14 @@ class StreamingCompareWorkflow:
         self._send_event(
             step, "start",
             content=f"正在执行 {self.STEP_NAMES[step]}...",
-            prompt=prompt if include_debug else None,
+            prompt=prompt[:1000] if include_debug else None,
             model_name=model_name,
             on_event=on_event
         )
         
         try:
             result, metadata = agent_fn(on_chunk)
+            logger.info(f"[_run_agent_streaming] 步骤 {step} 完成，结果长度: {len(result)} 字符")
             self.results[result_key] = result
             
             self._send_event(
@@ -287,13 +321,20 @@ class StreamingCompareWorkflow:
             }
             
         except Exception as e:
+            logger.error(f"[_run_agent_streaming] 步骤 {step} 执行失败: {e}")
+            error_msg = str(e)
             self._send_event(
                 step, "error",
-                error=str(e),
+                error=error_msg,
                 model_name=model_name,
                 on_event=on_event
             )
-            raise
+            self.results[result_key] = f"[步骤执行失败: {error_msg[:200]}...]"
+            self.debug_info[step] = {
+                "prompt": prompt,
+                "result": f"失败: {error_msg}",
+                "model": model_name
+            }
     
     def _run_image_generation(
         self,
