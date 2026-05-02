@@ -1,6 +1,7 @@
 import json
 import base64
 import os
+import logging
 from typing import Dict, Any, Optional, Callable, List
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -19,6 +20,10 @@ from agents.agent_b_view_a import B_VIEW_A_PROMPT
 from agents.agent_summarizer import SUMMARIZER_PROMPT
 from agents.agent_image_generator import AgentImageGenerator, IMAGE_GENERATOR_PROMPT
 from config import GEMINI_MODEL_EXTRACT, GEMINI_MODEL_IMAGE
+
+logger = logging.getLogger(__name__)
+
+MAX_RESULT_LENGTH = 1500
 
 @dataclass
 class StepEvent:
