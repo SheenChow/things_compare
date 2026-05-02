@@ -564,7 +564,8 @@
                 'compare_ab': { number: 2, name: '系统性对比分析 (Agent 1)' },
                 'a_view_b': { number: 3, name: 'A视角看B (Agent 2)' },
                 'b_view_a': { number: 4, name: 'B视角看A (Agent 3)' },
-                'summarize': { number: 5, name: '汇总分析 (Agent 4)' }
+                'summarize': { number: 5, name: '汇总分析 (Agent 4)' },
+                'generate_image': { number: 6, name: '生成可视化图像' }
             };
             return configs[stepId] || { number: 0, name: stepId };
         }
@@ -680,6 +681,7 @@
                     element: document.getElementById(`step-${stepId}`),
                     content: '',
                     modelName: '',
+                    imageBase64: null,
                     debugInfo: { prompt: '', result: '' }
                 };
             }
@@ -692,6 +694,7 @@
             const stepStatus = stepEl.querySelector('.step-status');
             const statusDot = stepEl.querySelector('.status-dot');
             const stepModelName = stepEl.querySelector('.model-name');
+            const stepImageContainer = stepEl.querySelector('.step-image-container');
             
             if (data.model_name && !state.modelName) {
                 state.modelName = data.model_name;
@@ -700,6 +703,17 @@
                     stepModelName.style.display = 'inline-block';
                     if (data.model_name.includes('lite') || data.model_name.includes('Lite')) {
                         stepModelName.classList.add('lite');
+                    }
+                }
+            }
+            
+            if (data.image_base64) {
+                state.imageBase64 = data.image_base64;
+                if (stepImageContainer) {
+                    stepImageContainer.style.display = 'block';
+                    const img = stepImageContainer.querySelector('img');
+                    if (img) {
+                        img.src = 'data:image/png;base64,' + data.image_base64;
                     }
                 }
             }
@@ -777,6 +791,25 @@
         function createStepElement(stepId, config) {
             const resultContent = document.getElementById('resultContent');
             const showDebug = document.getElementById('showDebug').checked;
+            const isImageStep = stepId === 'generate_image';
+            
+            let stepContentHtml = `
+                <div class="step-content">
+                    <div class="step-text"></div>
+            `;
+            
+            if (isImageStep) {
+                stepContentHtml += `
+                    <div class="step-image-container" style="display: none; margin-top: 20px; text-align: center;">
+                        <img style="max-width: 100%; max-height: 400px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" alt="可视化图像">
+                        <div style="margin-top: 15px;">
+                            <a class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px; text-decoration: none; cursor: pointer;" onclick="downloadImage()">📥 下载图片</a>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            stepContentHtml += `</div>`;
             
             const stepHtml = `
                 <div class="step-container" id="step-${stepId}">
@@ -805,9 +838,7 @@
                         </div>
                     </div>
                     ` : ''}
-                    <div class="step-content">
-                        <div class="step-text"></div>
-                    </div>
+                    ${stepContentHtml}
                 </div>
             `;
             
@@ -889,6 +920,24 @@
             }
             
             window.location.href = `/api/download/${currentSessionId}`;
+        }
+        
+        function downloadPdf() {
+            if (!currentSessionId) {
+                alert('没有可下载的结果');
+                return;
+            }
+            
+            window.location.href = `/api/download-pdf/${currentSessionId}`;
+        }
+        
+        function downloadImage() {
+            if (!currentSessionId) {
+                alert('没有可下载的图片');
+                return;
+            }
+            
+            window.location.href = `/api/download-image/${currentSessionId}`;
         }
         
         document.getElementById('userInput').addEventListener('keypress', function(e) {

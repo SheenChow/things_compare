@@ -193,6 +193,83 @@ def download(session_id):
         logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/download-pdf/<session_id>', methods=['GET'])
+def download_pdf(session_id):
+    logger.info(f"PDF下载请求: {session_id}")
+    
+    cache_data = workflow_cache.get(session_id)
+    if not cache_data:
+        logger.error(f"会话不存在: {session_id}")
+        return jsonify({'error': '会话不存在或已过期'}), 404
+    
+    try:
+        workflow = cache_data['workflow']
+        
+        thing_a = workflow.results.get('thing_a', 'A')
+        thing_b = workflow.results.get('thing_b', 'B')
+        filename = f"对比分析_{thing_a}_vs_{thing_b}_{datetime.now().strftime('%Y%m%d')}.pdf"
+        
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, filename)
+        
+        workflow.generate_pdf(temp_path)
+        
+        logger.info(f"生成PDF文件: {temp_path}")
+        
+        return send_file(
+            temp_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/pdf'
+        )
+    except ImportError as e:
+        logger.error(f"PDF导出库未安装: {e}")
+        return jsonify({'error': '请安装 reportlab 库: pip install reportlab'}), 400
+    except Exception as e:
+        logger.error(f"PDF下载失败: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download-image/<session_id>', methods=['GET'])
+def download_image(session_id):
+    logger.info(f"图片下载请求: {session_id}")
+    
+    cache_data = workflow_cache.get(session_id)
+    if not cache_data:
+        logger.error(f"会话不存在: {session_id}")
+        return jsonify({'error': '会话不存在或已过期'}), 404
+    
+    try:
+        workflow = cache_data['workflow']
+        image_bytes = workflow.get_image_bytes()
+        
+        if not image_bytes:
+            logger.error(f"没有生成的图片: {session_id}")
+            return jsonify({'error': '没有生成的图片'}), 404
+        
+        thing_a = workflow.results.get('thing_a', 'A')
+        thing_b = workflow.results.get('thing_b', 'B')
+        filename = f"对比分析可视化_{thing_a}_vs_{thing_b}_{datetime.now().strftime('%Y%m%d')}.png"
+        
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, filename)
+        
+        with open(temp_path, 'wb') as f:
+            f.write(image_bytes)
+        
+        logger.info(f"生成图片文件: {temp_path}")
+        
+        return send_file(
+            temp_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='image/png'
+        )
+    except Exception as e:
+        logger.error(f"图片下载失败: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/save/<session_id>', methods=['POST'])
 def save(session_id):
     logger.info(f"保存请求: {session_id}")
@@ -230,10 +307,11 @@ def save(session_id):
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("多维度事物对比分析系统 Web 版")
+    print("多维度事物对比分析系统 Web 版（支持多模态）")
     print("=" * 60)
     print(f"请确保已设置 GEMINI_API_KEY 环境变量")
     print(f"访问地址: http://localhost:5000")
+    print(f"功能: 文本对比分析 + 可视化图像生成 + PDF导出")
     print("=" * 60)
     
     app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)

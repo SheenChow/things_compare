@@ -1,11 +1,9 @@
 from google import genai
 from typing import Generator, Optional, Callable
-from config import GEMINI_API_KEY, GEMINI_MODEL_EXTRACT, GEMINI_MODEL_ANALYSIS
+from config import GEMINI_API_KEY, GEMINI_MODEL_EXTRACT, GEMINI_MODEL_ANALYSIS, GEMINI_MODEL_IMAGE
 from PIL import Image
 from io import BytesIO
 import base64
-
-GEMINI_MODEL_IMAGE = "gemini-2.5-flash-image"
 
 class GeminiClient:
     def __init__(self, model_name: str = GEMINI_MODEL_ANALYSIS):
@@ -27,10 +25,9 @@ class GeminiClient:
         prompt: str,
         on_chunk: Optional[Callable[[str], None]] = None
     ) -> Generator[str, None, None]:
-        response = self.client.models.generate_content(
+        response = self.client.models.generate_content_stream(
             model=self.model_name,
-            contents=prompt,
-            stream=True
+            contents=prompt
         )
         full_text = ""
         for chunk in response:
