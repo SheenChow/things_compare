@@ -1,3 +1,5 @@
 google-generativeai>=0.7.0
 langgraph>=0.0.26
 typing-extensions>=4.5.0
+flask>=2.0.0
+flask-cors>=3.0.0
