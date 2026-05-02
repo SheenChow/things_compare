@@ -21,28 +21,27 @@ class CompareWorkflow:
         self.agent_b_view_a = AgentBViewA()
         self.agent_summarizer = AgentSummarizer()
     
-    def extract_objects(self, state: CompareState) -> CompareState:
+    def extract_objects(self, state: CompareState) -> dict:
         user_input = state["user_input"]
         thing_a, thing_b = self.object_extractor.extract(user_input)
         return {
-            **state,
             "thing_a": thing_a,
             "thing_b": thing_b
         }
     
-    def compare_ab(self, state: CompareState) -> CompareState:
+    def compare_ab(self, state: CompareState) -> dict:
         result = self.agent_compare_ab.run(state["thing_a"], state["thing_b"])
-        return {**state, "compare_ab_result": result}
+        return {"compare_ab_result": result}
     
-    def a_view_b(self, state: CompareState) -> CompareState:
+    def a_view_b(self, state: CompareState) -> dict:
         result = self.agent_a_view_b.run(state["thing_a"], state["thing_b"])
-        return {**state, "a_view_b_result": result}
+        return {"a_view_b_result": result}
     
-    def b_view_a(self, state: CompareState) -> CompareState:
+    def b_view_a(self, state: CompareState) -> dict:
         result = self.agent_b_view_a.run(state["thing_a"], state["thing_b"])
-        return {**state, "b_view_a_result": result}
+        return {"b_view_a_result": result}
     
-    def summarize(self, state: CompareState) -> CompareState:
+    def summarize(self, state: CompareState) -> dict:
         result = self.agent_summarizer.run(
             state["thing_a"],
             state["thing_b"],
@@ -50,7 +49,7 @@ class CompareWorkflow:
             state["a_view_b_result"],
             state["b_view_a_result"]
         )
-        return {**state, "summary_result": result}
+        return {"summary_result": result}
     
     def build_graph(self) -> StateGraph:
         workflow = StateGraph(CompareState)
