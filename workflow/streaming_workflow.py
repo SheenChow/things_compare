@@ -1,5 +1,7 @@
 import json
 import base64
+import os
+import logging
 from typing import Dict, Any, Optional, Callable, List
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -18,6 +20,10 @@ from agents.agent_b_view_a import B_VIEW_A_PROMPT
 from agents.agent_summarizer import SUMMARIZER_PROMPT
 from agents.agent_image_generator import AgentImageGenerator, IMAGE_GENERATOR_PROMPT
 from config import GEMINI_MODEL_EXTRACT, GEMINI_MODEL_IMAGE
+
+logger = logging.getLogger(__name__)
+
+MAX_RESULT_LENGTH = 1500
 
 @dataclass
 class StepEvent:
@@ -199,13 +205,30 @@ class StreamingCompareWorkflow:
             include_debug=include_debug
         )
         
+        compare_ab_result = self.results.get("compare_ab_result") or ""
+        a_view_b_result = self.results.get("a_view_b_result") or ""
+        b_view_a_result = self.results.get("b_view_b_result") or ""
+        
+        logger.info(f"[run_streaming] 准备调用 Summarizer")
+        logger.info(f"  compare_ab_result 长度: {len(compare_ab_result)}")
+        logger.info(f"  a_view_b_result 长度: {len(a_view_b_result)}")
+        logger.info(f"  b_view_a_result 长度: {len(b_view_a_result)}")
+        
+        MAX_TRUNCATE = 1200
+        compare_ab_truncated = compare_ab_result[:MAX_TRUNCATE] if len(compare_ab_result) > MAX_TRUNCATE else compare_ab_result
+        a_view_b_truncated = a_view_b_result[:MAX_TRUNCATE] if len(a_view_b_result) > MAX_TRUNCATE else a_view_b_result
+        b_view_a_truncated = b_view_a_result[:MAX_TRUNCATE] if len(b_view_a_result) > MAX_TRUNCATE else b_view_a_result
+        
         summarize_prompt = SUMMARIZER_PROMPT.format(
             thing_a=thing_a,
             thing_b=thing_b,
-            compare_ab_result=self.results["compare_ab_result"],
-            a_view_b_result=self.results["a_view_b_result"],
-            b_view_a_result=self.results["b_view_a_result"]
+            compare_ab_result=compare_ab_truncated,
+            a_view_b_result=a_view_b_truncated,
+            b_view_a_result=b_view_a_truncated
         )
+        
+        logger.info(f"[run_streaming] Summarizer Prompt 总长度: {len(summarize_prompt)} 字符")
+        
         self._run_agent_streaming(
             step=self.STEP_SUMMARIZE,
             prompt=summarize_prompt,
@@ -218,13 +241,25 @@ class StreamingCompareWorkflow:
             include_debug=include_debug
         )
         
+        logger.info(f"[run_streaming] 准备调用图像生成")
+        logger.info(f"  thing_a: {thing_a}")
+        logger.info(f"  thing_b: {thing_b}")
+        
+        summary_text = self.results.get("summary_result") or ""
+        if not summary_text or "步骤执行失败" in summary_text:
+            logger.warning("[run_streaming] Summarizer 失败，使用截断的结果")
+            summary_text = f"{compare_ab_truncated[:500]}\n{a_view_b_truncated[:300]}"
+        
+        logger.info(f"[run_streaming] 开始执行图像生成步骤...")
         self._run_image_generation(
             thing_a=thing_a,
             thing_b=thing_b,
-            summary_text=self.results["summary_result"],
+            summary_text=summary_text,
             on_event=on_event,
             include_debug=include_debug
         )
+        
+        logger.info(f"[run_streaming] 所有步骤完成")
         
         return {
             "results": self.results,
@@ -244,6 +279,10 @@ class StreamingCompareWorkflow:
         include_debug: bool = True
     ):
         full_content = ""
+        prompt_length = len(prompt)
+        logger.info(f"[_run_agent_streaming] 开始执行步骤: {step}")
+        logger.info(f"[_run_agent_streaming] Prompt 长度: {prompt_length} 字符")
+        logger.info(f"[_run_agent_streaming] 模型: {model_name}")
         
         def on_chunk(chunk: str):
             nonlocal full_content
@@ -258,13 +297,14 @@ class StreamingCompareWorkflow:
         self._send_event(
             step, "start",
             content=f"正在执行 {self.STEP_NAMES[step]}...",
-            prompt=prompt if include_debug else None,
+            prompt=prompt[:1000] if include_debug else None,
             model_name=model_name,
             on_event=on_event
         )
         
         try:
             result, metadata = agent_fn(on_chunk)
+            logger.info(f"[_run_agent_streaming] 步骤 {step} 完成，结果长度: {len(result)} 字符")
             self.results[result_key] = result
             
             self._send_event(
@@ -281,13 +321,20 @@ class StreamingCompareWorkflow:
             }
             
         except Exception as e:
+            logger.error(f"[_run_agent_streaming] 步骤 {step} 执行失败: {e}")
+            error_msg = str(e)
             self._send_event(
                 step, "error",
-                error=str(e),
+                error=error_msg,
                 model_name=model_name,
                 on_event=on_event
             )
-            raise
+            self.results[result_key] = f"[步骤执行失败: {error_msg[:200]}...]"
+            self.debug_info[step] = {
+                "prompt": prompt,
+                "result": f"失败: {error_msg}",
+                "model": model_name
+            }
     
     def _run_image_generation(
         self,
@@ -438,99 +485,171 @@ class StreamingCompareWorkflow:
         try:
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, Table, TableStyle
             from reportlab.lib.units import inch
-            from reportlab.lib.colors import HexColor
+            from reportlab.lib.colors import HexColor, black, blue
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+            from reportlab.lib.enums import TA_LEFT
             
-            doc = SimpleDocTemplate(output_path, pagesize=A4)
+            try:
+                pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
+                pdfmetrics.registerFont(UnicodeCIDFont('HeiseiKakuGo-W5'))
+                CHINESE_FONT_NORMAL = 'STSong-Light'
+                CHINESE_FONT_BOLD = 'HeiseiKakuGo-W5'
+            except:
+                try:
+                    from reportlab.pdfbase.ttfonts import TTFont
+                    font_paths = [
+                        '/System/Library/Fonts/Hiragino Sans GB.ttc',
+                        '/System/Library/Fonts/STHeiti Light.ttc',
+                        '/System/Library/Fonts/Supplemental/Songti.ttc',
+                    ]
+                    CHINESE_FONT_NORMAL = 'Helvetica'
+                    CHINESE_FONT_BOLD = 'Helvetica-Bold'
+                    
+                    for font_path in font_paths:
+                        try:
+                            import os
+                            if os.path.exists(font_path):
+                                font_name = os.path.basename(font_path).replace('.ttc', '').replace('.ttf', '')
+                                pdfmetrics.registerFont(TTFont(font_name, font_path))
+                                CHINESE_FONT_NORMAL = font_name
+                                CHINESE_FONT_BOLD = font_name
+                                break
+                        except:
+                            continue
+                except:
+                    CHINESE_FONT_NORMAL = 'Helvetica'
+                    CHINESE_FONT_BOLD = 'Helvetica-Bold'
+            
+            doc = SimpleDocTemplate(
+                output_path, 
+                pagesize=A4,
+                leftMargin=0.8 * inch,
+                rightMargin=0.8 * inch,
+                topMargin=0.8 * inch,
+                bottomMargin=0.8 * inch
+            )
+            
             styles = getSampleStyleSheet()
             
             title_style = ParagraphStyle(
-                'CustomTitle',
+                'ChineseTitle',
                 parent=styles['Title'],
-                fontSize=24,
+                fontName=CHINESE_FONT_BOLD,
+                fontSize=22,
                 spaceAfter=20,
-                textColor=HexColor('#667eea')
+                textColor=HexColor('#667eea'),
+                alignment=1
             )
             
             heading_style = ParagraphStyle(
-                'CustomHeading',
+                'ChineseHeading',
                 parent=styles['Heading2'],
-                fontSize=16,
+                fontName=CHINESE_FONT_BOLD,
+                fontSize=14,
                 spaceBefore=15,
-                spaceAfter=10,
+                spaceAfter=8,
                 textColor=HexColor('#4a5568')
             )
             
             normal_style = ParagraphStyle(
-                'CustomNormal',
+                'ChineseNormal',
                 parent=styles['Normal'],
-                fontSize=11,
+                fontName=CHINESE_FONT_NORMAL,
+                fontSize=10,
                 leading=18,
-                spaceAfter=10,
-                textColor=HexColor('#2d3748')
+                spaceAfter=6,
+                textColor=black,
+                wordWrap='CJK'
+            )
+            
+            small_style = ParagraphStyle(
+                'ChineseSmall',
+                parent=normal_style,
+                fontSize=9,
+                textColor=HexColor('#718096')
             )
             
             story = []
-            
             results = self.results
             
             story.append(Paragraph("事物对比分析报告", title_style))
-            story.append(Spacer(1, 10))
+            story.append(Spacer(1, 15))
             
-            info_text = f"""
-            <b>分析对象:</b> {results.get('thing_a', 'N/A')} vs {results.get('thing_b', 'N/A')}<br/>
-            <b>生成时间:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            """
-            story.append(Paragraph(info_text, normal_style))
+            info_table_data = [
+                [Paragraph('<b>分析对象:</b>', normal_style), 
+                 Paragraph(f"{results.get('thing_a', 'N/A')} VS {results.get('thing_b', 'N/A')}", normal_style)],
+                [Paragraph('<b>生成时间:</b>', normal_style),
+                 Paragraph(datetime.now().strftime('%Y-%m-%d %H:%M:%S'), normal_style)]
+            ]
+            
+            info_table = Table(info_table_data, colWidths=[1.2 * inch, 4.5 * inch])
+            info_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            story.append(info_table)
             story.append(Spacer(1, 20))
             
             sections = [
-                ("系统性对比分析", self.results.get('compare_ab_result')),
-                (f"{self.results.get('thing_a', 'A')} 视角看 {self.results.get('thing_b', 'B')}", self.results.get('a_view_b_result')),
-                (f"{self.results.get('thing_b', 'B')} 视角看 {self.results.get('thing_a', 'A')}", self.results.get('b_view_a_result')),
-                ("汇总分析", self.results.get('summary_result')),
+                ("一、系统性对比分析", self.results.get('compare_ab_result')),
+                (f"二、{results.get('thing_a', 'A')} 视角看 {results.get('thing_b', 'B')}", self.results.get('a_view_b_result')),
+                (f"三、{results.get('thing_b', 'B')} 视角看 {results.get('thing_a', 'A')}", self.results.get('b_view_a_result')),
+                ("四、汇总分析", self.results.get('summary_result')),
             ]
             
             for title, content in sections:
                 if content:
                     story.append(Paragraph(title, heading_style))
-                    story.append(Spacer(1, 5))
+                    story.append(Spacer(1, 8))
                     
                     paragraphs = content.split('\n')
                     for para in paragraphs:
                         if para.strip():
-                            para = para.replace('#', '')
-                            para = para.replace('*', '')
-                            story.append(Paragraph(para.strip(), normal_style))
+                            clean_para = para.strip()
+                            if clean_para.startswith('#'):
+                                clean_para = clean_para.lstrip('#').strip()
+                                story.append(Paragraph(clean_para, heading_style))
+                            elif clean_para.startswith('*') or clean_para.startswith('-'):
+                                clean_para = '• ' + clean_para.lstrip('*-').strip()
+                                story.append(Paragraph(clean_para, normal_style))
+                            else:
+                                story.append(Paragraph(clean_para, normal_style))
                     
                     story.append(Spacer(1, 15))
             
             if self.image_bytes:
                 story.append(PageBreak())
-                story.append(Paragraph("可视化图像", heading_style))
+                story.append(Paragraph("五、可视化图像", heading_style))
                 story.append(Spacer(1, 10))
                 
                 try:
                     from PIL import Image as PILImage
                     img = PILImage.open(BytesIO(self.image_bytes))
                     
-                    max_width = 6 * inch
-                    max_height = 8 * inch
+                    page_width = doc.width
+                    page_height = doc.height - 2 * inch
                     
                     img_width, img_height = img.size
-                    ratio = min(max_width / img_width, max_height / img_height)
+                    
+                    width_ratio = page_width / img_width
+                    height_ratio = page_height / img_height
+                    ratio = min(width_ratio, height_ratio, 1.0)
+                    
                     new_width = img_width * ratio
                     new_height = img_height * ratio
                     
-                    temp_img_path = output_path + '_temp.png'
+                    temp_dir = os.path.dirname(output_path)
+                    temp_img_path = os.path.join(temp_dir, f'temp_image_{os.getpid()}.png')
+                    
                     img.save(temp_img_path)
                     
                     img_platypus = Image(temp_img_path, width=new_width, height=new_height)
                     story.append(img_platypus)
                     
                     try:
-                        import os
                         os.remove(temp_img_path)
                     except:
                         pass
@@ -541,5 +660,5 @@ class StreamingCompareWorkflow:
             doc.build(story)
             return output_path
             
-        except ImportError:
-            raise ImportError("请安装 reportlab 库: pip install reportlab")
+        except ImportError as e:
+            raise ImportError(f"请安装 reportlab 库: pip install reportlab。错误: {e}")
